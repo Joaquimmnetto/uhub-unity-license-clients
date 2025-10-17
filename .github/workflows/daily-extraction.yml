@@ -1,0 +1,93 @@
+name: Daily Unity License Server Extraction
+
+on:
+  # schedule:
+  #   # Run once per day at 3:00 AM UTC
+  #   - cron: '0 3 * * *'
+  # Allow manual trigger from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  extract-license-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Install required packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dmg2img p7zip-full wget zip binutils tar
+      - name: Install GitHub CLI
+        run: |
+          sudo mkdir -p -m 755 /etc/apt/keyrings
+          out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg
+          cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+          sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+          sudo mkdir -p -m 755 /etc/apt/sources.list.d
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt install gh -y
+
+      - name: Run extraction script for linux
+        id: extract-linux
+        run: |
+          chmod +x ./extract-license-server-linux.sh
+          ./extract-license-server-linux.sh
+          VERSION=$(cat ulc_version_linux)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Run extraction script for macos x64
+        id: extract-macos-x64
+        run: |
+          chmod +x ./extract-license-server-macos.sh
+          ./extract-license-server-macos.sh x64
+          VERSION=$(cat ulc_version_macos-x64)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      
+      - name: Run extraction script for macos arm64
+        id: extract-macos-arm64
+        run: |
+          chmod +x ./extract-license-server-macos.sh
+          ./extract-license-server-macos.sh arm64
+          VERSION=$(cat ulc_version_macos-arm64)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+      - name: Determine Release Version
+        id: version
+        run: |
+          # Use linux version as primary version
+          RELEASE_VERSION="${{ steps.extract-linux.outputs.version }}"
+          echo "release_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          
+          # Check if release already exists
+          if gh release view "$RELEASE_VERSION" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          
+      - name: Create GitHub Release
+        if: steps.version.outputs.exists == 'false'
+        id: create-release
+        run: |
+          # Create release with extracted files
+          RELEASE_VERSION="${{ steps.version.outputs.release_version }}"
+          
+          # Create release notes
+          echo "# Unity Licensing Client $RELEASE_VERSION" > release_notes.md
+          echo "" >> release_notes.md
+          echo "Extracted Unity Licensing Client binaries from Unity Hub:" >> release_notes.md
+          echo "- Linux: ${{ steps.extract-linux.outputs.version }}" >> release_notes.md
+          echo "- macOS x64: ${{ steps.extract-macos-x64.outputs.version }}" >> release_notes.md
+          echo "- macOS arm64: ${{ steps.extract-macos-arm64.outputs.version }}" >> release_notes.md
+          
+          # Create GitHub Release
+          gh release create "$RELEASE_VERSION" \
+            --title "Unity Licensing Client $RELEASE_VERSION" \
+            --notes-file release_notes.md \
+            UnityLicensingClient-*.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+
